@@ -90,15 +90,16 @@ Include `antihash.php` + `main.js`.
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>Offer</title>
 
-  <script>
-    window.IntentBypassConfig = {
-      intentTarget: '{offer}',
-      cleanTarget:  '{offer}',
-      autoAttemptOnLoad: false,
-      beaconEndpoint: '/__log_intent',
-      debug: false
-    };
-  </script>
+<script>
+  window.IntentBypassConfig = {
+    page: 'money',
+    intentTarget: window.location.href,     
+    cleanTarget:  '{offer_link}',
+    autoAttemptOnLoad: true,  
+    beaconEndpoint: '/__log_intent',
+    debug: false
+  };
+</script>
   <script src="/main.js" defer></script>
 </head>
 <body>
@@ -121,15 +122,16 @@ Include `antihash.php`, `main.js`, and `refresher.js`.
   <meta name="x-offer" content="#">
   <title><?= e($text['meta_title']); ?></title>
 
-  <script>
-    window.IntentBypassConfig = {
-      intentTarget: <?= json_encode('https://' . $_SERVER['HTTP_HOST'] . $_SERVER['REQUEST_URI']); ?>,
-      cleanTarget:  <?= json_encode('https://' . $_SERVER['HTTP_HOST'] . $_SERVER['REQUEST_URI']); ?>,
-      autoAttemptOnLoad: false,
-      beaconEndpoint: '/__log_intent',
-      debug: false
-    };
-  </script>
+<script>
+  window.IntentBypassConfig = {
+    // page не указываем → считается white
+    intentTarget: window.location.href,
+    // cleanTarget можно не задавать
+    autoAttemptOnLoad: true,          
+    beaconEndpoint: '/__log_intent', 
+    debug: false
+  };
+</script>
 
   <script src="/main.js" defer></script>
   <script src="/refresher.js" defer></script>
