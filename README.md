@@ -137,11 +137,7 @@ Include `antihash.php`, `main.js`, and `refresher.js`.
   <script src="/refresher.js" defer></script>
   <!-- styles, localization, badges, etc. -->
 </head>
-<body
-  data-store-ios="<?= e($text['store_ios']); ?>"
-  data-store-android="<?= e($text['store_android']); ?>"
-  data-store-generic="<?= e($text['store_generic']); ?>"
->
+<body>
   <!-- Neutral layout with #tap overlay / CTA that calls main.js handlers -->
 </body>
 </html>
