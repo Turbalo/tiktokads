@@ -64,7 +64,8 @@ $antiHashDomNoiseAttr = 'data-ah-' . substr(hash('crc32b', $antiHashToken . rand
 <meta name="<?php echo anti_hash_escape_attr('anti-hash-' . substr($antiHashDomNoiseId, -6)); ?>"
       content="<?php echo anti_hash_escape_attr($antiHashToken); ?>">
 <?php
-echo "\n<!-- anti-hash:" . anti_hash_escape_html($antiHashToken) . ':' . anti_hash_escape_html((string) microtime(true)) . " -->\n";
+// Debug comment removed for security reasons
+// echo "\n<!-- anti-hash:" . anti_hash_escape_html($antiHashToken) . ':' . anti_hash_escape_html((string) microtime(true)) . " -->\n";
 
 // Описательные меты (description / og:description / twitter:description) с токеном
 foreach ($metaTargets as $metaTarget):
@@ -107,7 +108,14 @@ foreach ($metaTargets as $metaTarget):
       var locHref = win.location && win.location.href ? String(win.location.href) : '';
       if (!locHref) return;
 
-      var url = new URL(locHref);
+      var url;
+      try {
+        url = new URL(locHref);
+      } catch (urlErr) {
+        // Invalid URL (e.g., about:blank, data: URI)
+        return;
+      }
+      
       // добавляем / обновляем параметр antiHash в QS
       url.searchParams.set('antiHash', token);
       var finalHref = url.toString();
@@ -157,7 +165,11 @@ foreach ($metaTargets as $metaTarget):
 function anti_hash_generate_token(array $config)
 {
     if (!empty($config['token']) && is_string($config['token'])) {
-        return substr(preg_replace('/[^a-f0-9]/i', '', $config['token']), 0, 64);
+        $filtered = substr(preg_replace('/[^a-f0-9]/i', '', $config['token']), 0, 64);
+        // Minimum length check to ensure sufficient entropy
+        if (strlen($filtered) >= 32) {
+            return $filtered;
+        }
     }
 
     $entropy = [
@@ -171,7 +183,7 @@ function anti_hash_generate_token(array $config)
     try {
         $entropy[] = bin2hex(random_bytes(32));
     } catch (Exception $e) {
-        $entropy[] = md5(mt_rand());
+        $entropy[] = bin2hex(pack('N4', mt_rand(), mt_rand(), mt_rand(), mt_rand()));
     }
 
     return substr(hash('sha256', implode('|', $entropy)), 0, 32);
@@ -223,13 +235,23 @@ function anti_hash_build_url(array $parts)
     $host     = $parts['host'] ?? '';
     $port     = isset($parts['port']) ? ':' . $parts['port'] : '';
     $user     = $parts['user'] ?? '';
-    $pass     = isset($parts['pass']) ? ':' . $parts['pass']  : '';
-    $pass     = ($user || $pass) ? $pass . '@' : '';
+    $pass     = isset($parts['pass']) ? $parts['pass']  : '';
+    
+    // Build userinfo correctly: user[:pass]@
+    $userinfo = '';
+    if ($user || $pass) {
+        $userinfo = $user;
+        if ($pass) {
+            $userinfo .= ':' . $pass;
+        }
+        $userinfo .= '@';
+    }
+    
     $path     = $parts['path'] ?? '';
     $query    = isset($parts['query']) && $parts['query'] !== '' ? '?' . $parts['query'] : '';
     $fragment = isset($parts['fragment']) ? '#' . $parts['fragment'] : '';
 
-    return $scheme . $user . $pass . $host . $port . $path . $query . $fragment;
+    return $scheme . $userinfo . $host . $port . $path . $query . $fragment;
 }
 
 /**
@@ -253,5 +275,5 @@ function anti_hash_escape_attr($value)
 
 function anti_hash_escape_html($value)
 {
-    return htmlspecialchars($value, ENT_NOQUOTES | ENT_SUBSTITUTE, 'UTF-8');
+    return htmlspecialchars($value, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
 }

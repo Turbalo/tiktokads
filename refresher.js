@@ -1,7 +1,7 @@
 (function refresherOncePerSession(global, doc) {
   'use strict';
 
-  var SESSION_KEY = '__intentRefreshSession';
+  var SESSION_KEY = 'intent_done_session';
 
   try {
     // sessionStorage может быть вырублен или недоступен в некоторых WebView
@@ -16,16 +16,29 @@
     }
 
     // сессии ещё нет → помечаем и перезагружаем страницу
-    storage.setItem(SESSION_KEY, String(Date.now()));
+    storage.setItem(SESSION_KEY, '1');
 
     try {
       // мягкий вариант: добавляем анти-кеш параметр и делаем replace
       var url = new URL(global.location.href);
       url.searchParams.set('_r', Date.now().toString(36));
-      global.location.replace(url.toString());
+      try {
+        global.location.replace(url.toString());
+      } catch (replaceErr) {
+        // fallback если location.replace() выбросит исключение
+        try {
+          global.location.reload();
+        } catch (reloadErr) {
+          // оба метода не сработали, но мы не можем ничего сделать
+        }
+      }
     } catch (e) {
       // если вдруг URL не поддерживается (старые WebView) – fallback
-      global.location.reload();
+      try {
+        global.location.reload();
+      } catch (reloadErr) {
+        // reload тоже не сработал
+      }
     }
 
   } catch (err) {
