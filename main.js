@@ -316,13 +316,18 @@
   function openExternalOnce(reason) {
     if (!baseTarget) return;
 
-    // White pages: only one attempt, only by real user gesture
-    if (pageType === 'white' && !(reason && reason.startsWith('user_'))) {
+    const isUser = !!(reason && reason.startsWith('user_'));
+
+    // White pages: only allow user-initiated attempts
+    if (pageType === 'white' && !isUser) {
       return;
     }
 
-    // Now check sessionDone and intentPending (after filtering out non-gesture white page attempts)
-    if (sessionDone || intentPending) return;
+    // Session marker only blocks non-user attempts (auto attempts / reloads).
+    if (!isUser && sessionDone) return;
+
+    // If an intent is already pending, block to avoid races
+    if (intentPending) return;
     intentPending = true;
 
     const cleanUrl = normalizeTarget(baseTarget).httpsUrl || baseTarget;
@@ -383,6 +388,9 @@
         errors: Logger.getErrors()
       });
       showFallbackHint();
+    } finally {
+      // Always clear pending flag so subsequent user actions are allowed
+      try { intentPending = false; } catch (_) {}
     }
   }
 

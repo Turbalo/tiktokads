@@ -194,7 +194,9 @@
     document.addEventListener('visibilitychange', onVis);
     window.addEventListener('pagehide', onHide);
 
-    finalizeTimer = setTimeout(() => finalize('likely_fail', 'timeout_no_events'), 2200);
+    // Allow configurable timeout via cfg.outcomeTimeoutMs, fallback to 3000ms
+    const OUTCOME_TIMEOUT = (cfg && cfg.outcomeTimeoutMs) || 3000;
+    finalizeTimer = setTimeout(() => finalize('likely_fail', 'timeout_no_events'), OUTCOME_TIMEOUT);
   };
 
   window.IntentBypassLogger = Logger;
